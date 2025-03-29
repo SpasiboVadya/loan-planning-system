@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "fastapitest"
+version = "0.1.0"
+description = ""
+authors = ["Вадим Гуменюк <36135603+SpasiboVadya@users.noreply.github.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.115.12"
+sqlalchemy = {extras = ["asyncio"], version = "^2.0.40"}
+pydantic = "^2.11.1"
+pydantic-settings = "^2.8.1"
+uvicorn = {extras = ["standard"], version = "^0.34.0"}
+black = "^25.1.0"
+alembic = "^1.15.2"
+aiomysql = "^0.2.0"
+pymysql = "^1.1.1"
+cryptography = "^44.0.2"
+python-jose = {extras = ["cryptography"], version = "^3.4.0"}
+python-multipart = "^0.0.20"
+passlib = {version = ">=1.7.4", extras = ["bcrypt"]}
+bcrypt = ">=4.0.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
