@@ -64,4 +64,29 @@ async def get_year_performance(
 ):
     """Get yearly performance analysis with total sums per plan category."""
     repo = PlanRepository(db)
-    return await repo.get_year_performance(year) 
+    return await repo.get_year_performance(year)
+
+@router.get("/year-summary", response_model=schemas.YearSummary)
+async def get_year_summary(
+    year: int = Query(..., description="Year to analyze"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get summarized monthly information for a given year.
+    
+    Returns monthly summaries with:
+    - Month and year
+    - Number of issues (credits) for the month
+    - Amount from the plan for the month
+    - Total amount of payments for the month
+    - % fulfillment of the plan for payments
+    - Number of payments per month
+    - Amount from the collection plan for the month
+    - Amount of payments for the month
+    - % fulfillment of the collection plan
+    - % of the amount of issues for the month from the amount of issues for the year
+    - % of the amount of payments for the month from the amount of payments for the year
+    """
+    repo = PlanRepository(db)
+    return await repo.get_year_summary(year) 
