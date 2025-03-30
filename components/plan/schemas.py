@@ -37,6 +37,7 @@ class CategoryPerformance(BaseModel):
     actual: float
     difference: float
     performance_percentage: float
+    plan_month: date
 
 
 class MonthlyPerformance(BaseModel):

@@ -6,6 +6,7 @@ import io
 import pandas as pd
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+import csv
 
 from components.plan.models import Plan
 from components.credit.models import Credit
@@ -175,42 +176,100 @@ class PlanRepository:
         await self.session.commit()
         return True
 
-    async def get_plans_performance(self, period: date) -> List[schemas.CategoryPerformance]:
-        """Get performance of plans for a specific period."""
-        # Get all plans for the period
+    async def get_plans_performance(self, as_of_date: date) -> List[schemas.CategoryPerformance]:
+        """
+        Get performance of plans as of a specific date.
+        
+        Args:
+            as_of_date: The date as of which to check plan execution
+            
+        Returns:
+            List of category performances with:
+            - Month of the plan
+            - Plan category
+            - Amount from the plan
+            - Amount of credits issued or payments collected
+            - % of plan fulfillment
+        """
+        # Determine the month of the given date
+        plan_month = date(as_of_date.year, as_of_date.month, 1)
+        
+        # Get all plans for the month
         result = await self.session.execute(
-            select(Plan).where(Plan.period == period)
+            select(Plan).where(Plan.period == plan_month)
         )
         plans = result.scalars().all()
         
+        if not plans:
+            return []
+        
+        # Get dictionary categories to identify issue and collection categories
+        result = await self.session.execute(select(Dictionary))
+        categories = {category.id: category.name for category in result.scalars().all()}
+        
+        # Find category IDs for issue and collection
+        # Assuming тіло (body) is for credit issue, відсотки (interest) is for collection
+        issue_category_id = next((k for k, v in categories.items() if v == "тіло"), None)
+        collection_category_id = next((k for k, v in categories.items() if v == "відсотки"), None)
+        
         performance_data = []
+        
+        # Next month for date comparison
+        next_month = date(plan_month.year, plan_month.month + 1, 1) if plan_month.month < 12 else date(plan_month.year + 1, 1, 1)
+        
         for plan in plans:
-            # Get actual payments for this category in the period
-            next_month = date(period.year, period.month + 1, 1) if period.month < 12 else date(period.year + 1, 1, 1)
+            category_id = plan.category_id
+            category_name = categories.get(category_id, f"Category {category_id}")
             
-            result = await self.session.execute(
-                select(func.sum(Payment.sum))
-                .join(Credit, Payment.credit_id == Credit.id)
-                .where(
-                    Payment.payment_date >= period,
-                    Payment.payment_date < next_month,
-                    Payment.type_id == plan.category_id
+            # Calculate actual amounts depending on category
+            if category_id == issue_category_id:
+                # For "Issue" category - sum of credit.body for credits issued in this period
+                result = await self.session.execute(
+                    select(func.sum(Credit.body))
+                    .where(
+                        Credit.issuance_date >= plan_month,
+                        Credit.issuance_date <= as_of_date
+                    )
                 )
-            )
-            actual_sum = result.scalar() or 0
+                actual_amount = result.scalar() or 0
+            elif category_id == collection_category_id:
+                # For "Collection" category - sum of payments in this period
+                result = await self.session.execute(
+                    select(func.sum(Payment.sum))
+                    .join(Credit, Payment.credit_id == Credit.id)
+                    .where(
+                        Payment.payment_date >= plan_month,
+                        Payment.payment_date <= as_of_date,
+                        Payment.type_id == category_id
+                    )
+                )
+                actual_amount = result.scalar() or 0
+            else:
+                # For other categories - sum of payments of that type
+                result = await self.session.execute(
+                    select(func.sum(Payment.sum))
+                    .join(Credit, Payment.credit_id == Credit.id)
+                    .where(
+                        Payment.payment_date >= plan_month,
+                        Payment.payment_date <= as_of_date,
+                        Payment.type_id == category_id
+                    )
+                )
+                actual_amount = result.scalar() or 0
             
-            # Get category name
-            result = await self.session.execute(
-                select(Dictionary.name).where(Dictionary.id == plan.category_id)
-            )
-            category_name = result.scalar_one()
+            # Calculate fulfillment percentage
+            plan_amount = float(plan.sum)
+            actual_amount = float(actual_amount)
+            fulfillment_percentage = (actual_amount / plan_amount * 100) if plan_amount > 0 else 0
             
+            # Add to result
             performance_data.append(schemas.CategoryPerformance(
                 category=category_name,
-                planned=float(plan.sum),
-                actual=float(actual_sum),
-                difference=float(actual_sum - plan.sum),
-                performance_percentage=(actual_sum / plan.sum * 100) if plan.sum > 0 else 0
+                planned=plan_amount,
+                actual=actual_amount,
+                difference=actual_amount - plan_amount,
+                performance_percentage=fulfillment_percentage,
+                plan_month=plan_month
             ))
         
         return performance_data
@@ -646,6 +705,133 @@ class PlanRepository:
                 category_name = row["plan category name"]
                 category_id = categories[category_name]
                 amount = float(row["amount"])
+                
+                # Create and add plan
+                new_plan = Plan(
+                    period=plan_month,
+                    sum=amount,
+                    category_id=category_id
+                )
+                self.session.add(new_plan)
+            
+            # Commit all changes
+            await self.session.commit()
+            return True, "Plans uploaded successfully", []
+            
+        except Exception as e:
+            # Handle any unexpected errors
+            return False, f"Error processing file: {str(e)}", []
+
+    async def upload_plans_from_csv(self, file_content: BinaryIO) -> Tuple[bool, str, List[Dict]]:
+        """
+        Upload plans from a CSV file.
+        
+        Args:
+            file_content: The CSV file content
+            
+        Returns:
+            Tuple containing:
+            - Success status (bool)
+            - Message (str)
+            - List of errors if any (List[Dict])
+        """
+        errors = []
+        
+        try:
+            # Read CSV file
+            content_str = file_content.read().decode('utf-8')
+            csv_reader = csv.DictReader(content_str.splitlines(), delimiter='\t')
+            
+            # Store rows for later processing
+            csv_rows = list(csv_reader)
+            
+            # Validate all rows first
+            for row_num, row in enumerate(csv_rows, start=2):  # Start at 2 to account for header row
+                # Validate required fields
+                if not all(field in row for field in ['period', 'sum', 'category_id']):
+                    return False, "CSV file must contain 'period', 'sum', and 'category_id' columns", []
+                
+                # Validate period format and first day of month
+                try:
+                    # Parse date in format DD.MM.YYYY
+                    day, month, year = map(int, row['period'].split('.'))
+                    plan_month = date(year, month, day)
+                    
+                    # Check if it's the first day of the month
+                    if plan_month.day != 1:
+                        errors.append({
+                            "row": row_num,
+                            "message": f"Period must be the first day of the month (got {plan_month})"
+                        })
+                        continue
+                except Exception as e:
+                    errors.append({
+                        "row": row_num,
+                        "message": f"Invalid date format for period: {row['period']}. Expected DD.MM.YYYY"
+                    })
+                    continue
+                
+                # Validate sum
+                try:
+                    amount = float(row['sum'])
+                    if pd.isna(amount):
+                        errors.append({
+                            "row": row_num,
+                            "message": "Sum cannot be empty"
+                        })
+                        continue
+                except Exception:
+                    errors.append({
+                        "row": row_num,
+                        "message": f"Invalid sum value: {row['sum']}"
+                    })
+                    continue
+                
+                # Validate category_id
+                try:
+                    category_id = int(row['category_id'])
+                    
+                    # Check if category exists
+                    result = await self.session.execute(
+                        select(Dictionary).where(Dictionary.id == category_id)
+                    )
+                    if not result.scalar_one_or_none():
+                        errors.append({
+                            "row": row_num,
+                            "message": f"Category ID {category_id} does not exist"
+                        })
+                        continue
+                except Exception:
+                    errors.append({
+                        "row": row_num,
+                        "message": f"Invalid category_id: {row['category_id']}"
+                    })
+                    continue
+                
+                # Check if plan already exists
+                existing_plan = await self.session.execute(
+                    select(Plan).where(
+                        Plan.period == plan_month,
+                        Plan.category_id == category_id
+                    )
+                )
+                if existing_plan.scalar_one_or_none():
+                    errors.append({
+                        "row": row_num,
+                        "message": f"Plan already exists for {plan_month} with category_id {category_id}"
+                    })
+                    continue
+            
+            # If we have any errors, return them without committing
+            if errors:
+                return False, "Validation errors occurred", errors
+            
+            # If no errors, process all rows and insert the plans
+            for row in csv_rows:
+                day, month, year = map(int, row['period'].split('.'))
+                plan_month = date(year, month, day)
+                category_id = int(row['category_id'])
+                amount = float(row['sum'])
                 
                 # Create and add plan
                 new_plan = Plan(

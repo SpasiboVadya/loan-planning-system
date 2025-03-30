@@ -21,6 +21,7 @@ python-jose = {extras = ["cryptography"], version = "^3.4.0"}
 python-multipart = "^0.0.20"
 passlib = {version = ">=1.7.4", extras = ["bcrypt"]}
 bcrypt = ">=4.0.1"
+pandas = "^2.2.3"
 
 
 [build-system]

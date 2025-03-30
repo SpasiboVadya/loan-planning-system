@@ -60,31 +60,31 @@ async def upload_plans(
     current_user: User = Depends(get_current_user)
 ):
     """
-    Upload plans for a new month from an Excel file.
+    Upload plans for a new month from a CSV file.
     
-    The Excel file must have the following columns:
-    - plan month: First day of the month (e.g. 2023-01-01)
-    - plan category name: The category name (must exist in dictionary)
-    - amount: The plan amount (cannot be empty, can be 0)
+    The CSV file must have the following columns:
+    - period: First day of the month in DD.MM.YYYY format (e.g., 01.01.2023)
+    - sum: The plan amount (cannot be empty, can be 0)
+    - category_id: The ID of the category
     
     Validations:
-    - Plan month must be the first day of a month
-    - Category name must exist in the dictionary
-    - Amount cannot be empty (0 is valid)
+    - Period must be the first day of a month
+    - Category ID must exist in the dictionary
+    - Sum cannot be empty (0 is valid)
     - Plan must not already exist for the month and category
     """
-    # Check if file is Excel
-    if not file.filename.endswith(('.xls', '.xlsx')):
+    # Check if file is CSV
+    if not file.filename.endswith('.csv'):
         return schemas.PlanUploadResponse(
             success=False, 
-            message="Invalid file format. Only Excel files (.xls, .xlsx) are supported."
+            message="Invalid file format. Only CSV files (.csv) are supported."
         )
     
     repo = PlanRepository(db)
     
     # Process the file
     file_content = await file.read()
-    success, message, errors = await repo.upload_plans_from_excel(io.BytesIO(file_content))
+    success, message, errors = await repo.upload_plans_from_csv(io.BytesIO(file_content))
     
     if not success:
         error_objects = [schemas.PlanUploadError(**error) for error in errors]
@@ -101,13 +101,24 @@ async def upload_plans(
 
 @router.get("/performance", response_model=List[schemas.CategoryPerformance])
 async def get_plans_performance(
-    period: date = Query(..., description="Period to check (first day of the month)"),
+    as_of_date: date = Query(..., description="Date as of which to check plan execution"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Get performance of plans for a specific period."""
+    """
+    Get performance of plans as of a specific date.
+    
+    Returns:
+    - Month of the plan
+    - Plan category
+    - Amount from the plan
+    - Amount of credits issued (for plans with the "Issue" category) or payments collected (for "Collect" category)
+    - % of plan fulfillment
+    
+    All calculations are based on data from the beginning of the plan month to the specified date (inclusive).
+    """
     repo = PlanRepository(db)
-    return await repo.get_plans_performance(period)
+    return await repo.get_plans_performance(as_of_date)
 
 @router.get("/year-performance", response_model=schemas.YearPerformance)
 async def get_year_performance(
