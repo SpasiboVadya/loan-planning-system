@@ -2,8 +2,9 @@
 
 from datetime import date
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
+import io
 
 from components.core.init_db import get_db
 from components.plan.repository import PlanRepository
@@ -23,7 +24,27 @@ async def get_user_credits(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Get all credits for a specific user with their payment history."""
+    """
+    Get all credits for a specific user with loan information.
+    
+    Returns:
+    - Date the loan was issued
+    - Boolean whether the loan is closed (true - closed, false - open)
+    
+    For closed loans:
+    - Date of loan repayment
+    - Loan amount disbursed
+    - Accrued interest
+    - Amount of payments on the loan
+    
+    For open loans:
+    - Loan repayment deadline
+    - Number of days the loan is overdue
+    - The amount of the loan
+    - Accrued interest
+    - The amount of payments on the body
+    - Amount of interest payments
+    """
     repo = PlanRepository(db)
     credits = await repo.get_user_credits(user_id)
     
@@ -32,19 +53,51 @@ async def get_user_credits(
     
     return credits
 
-@router.post("/insert")
-async def insert_plans(
+@router.post("/insert", response_model=schemas.PlanUploadResponse)
+async def upload_plans(
+    file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Insert plans for the current month."""
-    repo = PlanRepository(db)
-    success = await repo.insert_plans()
+    """
+    Upload plans for a new month from an Excel file.
     
-    if success:
-        return {"message": "Plans inserted successfully"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to insert plans")
+    The Excel file must have the following columns:
+    - plan month: First day of the month (e.g. 2023-01-01)
+    - plan category name: The category name (must exist in dictionary)
+    - amount: The plan amount (cannot be empty, can be 0)
+    
+    Validations:
+    - Plan month must be the first day of a month
+    - Category name must exist in the dictionary
+    - Amount cannot be empty (0 is valid)
+    - Plan must not already exist for the month and category
+    """
+    # Check if file is Excel
+    if not file.filename.endswith(('.xls', '.xlsx')):
+        return schemas.PlanUploadResponse(
+            success=False, 
+            message="Invalid file format. Only Excel files (.xls, .xlsx) are supported."
+        )
+    
+    repo = PlanRepository(db)
+    
+    # Process the file
+    file_content = await file.read()
+    success, message, errors = await repo.upload_plans_from_excel(io.BytesIO(file_content))
+    
+    if not success:
+        error_objects = [schemas.PlanUploadError(**error) for error in errors]
+        return schemas.PlanUploadResponse(
+            success=False,
+            message=message,
+            errors=error_objects
+        )
+    
+    return schemas.PlanUploadResponse(
+        success=True,
+        message=message
+    )
 
 @router.get("/performance", response_model=List[schemas.CategoryPerformance])
 async def get_plans_performance(
@@ -89,4 +142,24 @@ async def get_year_summary(
     - % of the amount of payments for the month from the amount of payments for the year
     """
     repo = PlanRepository(db)
-    return await repo.get_year_summary(year) 
+    return await repo.get_year_summary(year)
+
+@router.get("/users-with-open-loans", response_model=List[schemas.UserWithOpenLoans])
+async def get_users_with_open_loans(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get all users who have open loans.
+    
+    Returns a list of users with their open loan information including:
+    - User ID, login, and registration date
+    - List of open loans for each user with loan details
+    """
+    repo = PlanRepository(db)
+    users = await repo.get_users_with_open_loans()
+    
+    if not users:
+        raise HTTPException(status_code=404, detail="No users with open loans found")
+    
+    return users 

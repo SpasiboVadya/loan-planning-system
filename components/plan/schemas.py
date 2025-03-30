@@ -1,6 +1,6 @@
 """Pydantic schemas for plan data validation."""
 
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field
 
@@ -97,12 +97,49 @@ class CreditPayment(BaseModel):
     type: str
 
 
+class ClosedLoanData(BaseModel):
+    """Schema for closed loan data."""
+    repayment_date: date
+    loan_amount: float
+    accrued_interest: float
+    payment_amount: float
+
+
+class OpenLoanData(BaseModel):
+    """Schema for open loan data."""
+    repayment_deadline: date
+    overdue_days: int
+    loan_amount: float
+    accrued_interest: float
+    body_payments: float
+    interest_payments: float
+
+
 class UserCredit(BaseModel):
     """Schema for user credit."""
     credit_id: int
     issuance_date: date
-    return_date: date
-    actual_return_date: Optional[date] = None
-    body: float
-    percent: float
-    payments: List[CreditPayment]
+    is_closed: bool
+    closed_loan_data: Optional[ClosedLoanData] = None
+    open_loan_data: Optional[OpenLoanData] = None
+
+
+class UserWithOpenLoans(BaseModel):
+    """Schema for user with open loans."""
+    user_id: int
+    login: str
+    registration_date: date
+    open_loans: List[UserCredit]
+
+
+class PlanUploadError(BaseModel):
+    """Schema for plan upload error."""
+    row: int
+    message: str
+
+
+class PlanUploadResponse(BaseModel):
+    """Schema for plan upload response."""
+    success: bool
+    message: str
+    errors: Optional[List[PlanUploadError]] = None

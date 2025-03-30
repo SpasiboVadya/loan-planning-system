@@ -1,7 +1,9 @@
 """Repository for plan operations."""
 
-from datetime import date
-from typing import List, Dict, Optional, Any
+from datetime import date, datetime, timedelta
+from typing import List, Dict, Optional, Any, Tuple, BinaryIO
+import io
+import pandas as pd
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +12,7 @@ from components.credit.models import Credit
 from components.payment.models import Payment
 from components.dictionary.models import Dictionary
 from components.plan import schemas
+from components.user.models import User
 
 
 class PlanRepository:
@@ -20,7 +23,25 @@ class PlanRepository:
         self.session = session
 
     async def get_user_credits(self, user_id: int) -> List[schemas.UserCredit]:
-        """Get all credits for a specific user with their payment history."""
+        """
+        Get all credits for a specific user with their payment history.
+        
+        Returns a list of user credits with the following information:
+        - Date the loan was issued
+        - Boolean value whether the loan is closed
+        - For closed loans:
+            - Date of loan repayment
+            - Loan amount disbursed
+            - Accrued interest
+            - Amount of payments on the loan
+        - For open loans:
+            - Loan repayment deadline
+            - Number of days the loan is overdue
+            - The amount of the loan
+            - Accrued interest
+            - The amount of payments on the body
+            - Amount of interest payments
+        """
         # Get user's credits
         result = await self.session.execute(
             select(Credit).where(Credit.user_id == user_id)
@@ -31,6 +52,16 @@ class PlanRepository:
             return []
         
         credits_data = []
+        
+        # Get dictionary categories to identify payment types
+        result = await self.session.execute(select(Dictionary))
+        categories = {category.id: category.name for category in result.scalars().all()}
+        
+        # Find category IDs for body and interest payments
+        # Assuming тіло (body) is for credit body payments, відсотки (interest) is for interest payments
+        body_category_id = next((k for k, v in categories.items() if v == "тіло"), None)
+        interest_category_id = next((k for k, v in categories.items() if v == "відсотки"), None)
+        
         for credit in credits:
             # Get payments for this credit
             result = await self.session.execute(
@@ -40,31 +71,60 @@ class PlanRepository:
             )
             payments = result.scalars().all()
             
-            # Get payment type names
-            payment_types = {}
-            for payment in payments:
-                if payment.type_id not in payment_types:
-                    result = await self.session.execute(
-                        select(Dictionary.name).where(Dictionary.id == payment.type_id)
-                    )
-                    payment_types[payment.type_id] = result.scalar_one()
+            # Calculate payment amounts by type
+            total_payment_amount = sum(float(payment.sum) for payment in payments)
+            body_payments = sum(
+                float(payment.sum) 
+                for payment in payments 
+                if payment.type_id == body_category_id
+            )
+            interest_payments = sum(
+                float(payment.sum) 
+                for payment in payments 
+                if payment.type_id == interest_category_id
+            )
             
-            credits_data.append(schemas.UserCredit(
+            # Check if loan is closed (has actual return date)
+            is_closed = credit.actual_return_date is not None
+            
+            # Create the UserCredit object
+            user_credit = schemas.UserCredit(
                 credit_id=credit.id,
                 issuance_date=credit.issuance_date,
-                return_date=credit.return_date,
-                actual_return_date=credit.actual_return_date,
-                body=float(credit.body),
-                percent=float(credit.percent),
-                payments=[
-                    schemas.CreditPayment(
-                        date=payment.payment_date,
-                        sum=float(payment.sum),
-                        type=payment_types[payment.type_id]
-                    )
-                    for payment in payments
-                ]
-            ))
+                is_closed=is_closed
+            )
+            
+            if is_closed:
+                # For closed loans
+                # Convert actual_return_date to date if it's a datetime
+                repayment_date = credit.actual_return_date.date() if isinstance(credit.actual_return_date, datetime) else credit.actual_return_date
+                
+                user_credit.closed_loan_data = schemas.ClosedLoanData(
+                    repayment_date=repayment_date,
+                    loan_amount=float(credit.body),
+                    accrued_interest=float(credit.percent),
+                    payment_amount=total_payment_amount
+                )
+            else:
+                # For open loans
+                # Calculate overdue days
+                today = date.today()
+                
+                # Convert return_date to date if it's a datetime
+                return_date = credit.return_date.date() if isinstance(credit.return_date, datetime) else credit.return_date
+                
+                overdue_days = max(0, (today - return_date).days) if today > return_date else 0
+                
+                user_credit.open_loan_data = schemas.OpenLoanData(
+                    repayment_deadline=return_date,
+                    overdue_days=overdue_days,
+                    loan_amount=float(credit.body),
+                    accrued_interest=float(credit.percent),
+                    body_payments=body_payments,
+                    interest_payments=interest_payments
+                )
+            
+            credits_data.append(user_credit)
         
         return credits_data
 
@@ -440,3 +500,165 @@ class PlanRepository:
             overall_collection_plan_fulfillment_percentage=overall_collection_plan_fulfillment,
             monthly_summaries=monthly_summaries
         )
+
+    async def get_users_with_open_loans(self) -> List[Dict]:
+        """
+        Get all users who have open loans.
+        
+        Returns a list of users with open loan information.
+        """
+        # Find users with credits where actual_return_date is NULL (open loans)
+        result = await self.session.execute(
+            select(Credit.user_id)
+            .where(Credit.actual_return_date == None)
+            .distinct()
+        )
+        user_ids = [row[0] for row in result.all()]
+        
+        if not user_ids:
+            return []
+        
+        # Get user information for these IDs
+        users_with_loans = []
+        
+        for user_id in user_ids:
+            # Get user info
+            result = await self.session.execute(
+                select(User).where(User.id == user_id)
+            )
+            user = result.scalar_one_or_none()
+            
+            if user:
+                # Get open loans for this user
+                credits = await self.get_user_credits(user_id)
+                # Filter only open loans
+                open_loans = [credit for credit in credits if not credit.is_closed]
+                
+                if open_loans:
+                    users_with_loans.append({
+                        "user_id": user.id,
+                        "login": user.login,
+                        "registration_date": user.registration_date,
+                        "open_loans": open_loans
+                    })
+        
+        return users_with_loans
+
+    async def upload_plans_from_excel(self, file_content: BinaryIO) -> Tuple[bool, str, List[Dict]]:
+        """
+        Upload plans from an Excel file.
+        
+        Args:
+            file_content: The Excel file content
+            
+        Returns:
+            Tuple containing:
+            - Success status (bool)
+            - Message (str)
+            - List of errors if any (List[Dict])
+        """
+        errors = []
+        
+        try:
+            # Read Excel file
+            df = pd.read_excel(file_content)
+            
+            # Check required columns
+            required_columns = ["plan month", "plan category name", "amount"]
+            for col in required_columns:
+                if col not in df.columns:
+                    return False, f"Missing required column: {col}", []
+            
+            # Get dictionary categories
+            result = await self.session.execute(select(Dictionary))
+            categories = {category.name: category.id for category in result.scalars().all()}
+            
+            # Process each row
+            for idx, row in df.iterrows():
+                row_num = idx + 2  # Excel starts at 1, with header at row 1
+                
+                # Validate plan month
+                try:
+                    plan_month = pd.to_datetime(row["plan month"]).date()
+                    
+                    # Check if it's the first day of the month
+                    if plan_month.day != 1:
+                        errors.append({
+                            "row": row_num,
+                            "message": "Plan month must be the first day of the month"
+                        })
+                        continue
+                except Exception:
+                    errors.append({
+                        "row": row_num,
+                        "message": "Invalid date format for plan month"
+                    })
+                    continue
+                
+                # Validate category name
+                category_name = row["plan category name"]
+                if category_name not in categories:
+                    errors.append({
+                        "row": row_num,
+                        "message": f"Invalid category name: {category_name}"
+                    })
+                    continue
+                
+                category_id = categories[category_name]
+                
+                # Validate amount
+                try:
+                    amount = float(row["amount"])
+                    if pd.isna(amount):
+                        errors.append({
+                            "row": row_num,
+                            "message": "Amount cannot be empty"
+                        })
+                        continue
+                except Exception:
+                    errors.append({
+                        "row": row_num,
+                        "message": "Invalid amount value"
+                    })
+                    continue
+                
+                # Check if plan already exists
+                existing_plan = await self.session.execute(
+                    select(Plan).where(
+                        Plan.period == plan_month,
+                        Plan.category_id == category_id
+                    )
+                )
+                if existing_plan.scalar_one_or_none():
+                    errors.append({
+                        "row": row_num,
+                        "message": f"Plan already exists for {plan_month} with category '{category_name}'"
+                    })
+                    continue
+            
+            # If we have any errors, return them without committing
+            if errors:
+                return False, "Validation errors occurred", errors
+            
+            # If no errors, process all rows and insert the plans
+            for idx, row in df.iterrows():
+                plan_month = pd.to_datetime(row["plan month"]).date()
+                category_name = row["plan category name"]
+                category_id = categories[category_name]
+                amount = float(row["amount"])
+                
+                # Create and add plan
+                new_plan = Plan(
+                    period=plan_month,
+                    sum=amount,
+                    category_id=category_id
+                )
+                self.session.add(new_plan)
+            
+            # Commit all changes
+            await self.session.commit()
+            return True, "Plans uploaded successfully", []
+            
+        except Exception as e:
+            # Handle any unexpected errors
+            return False, f"Error processing file: {str(e)}", []
