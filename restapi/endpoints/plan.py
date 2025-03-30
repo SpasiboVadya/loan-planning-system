@@ -120,15 +120,6 @@ async def get_plans_performance(
     repo = PlanRepository(db)
     return await repo.get_plans_performance(as_of_date)
 
-@router.get("/year-performance", response_model=schemas.YearPerformance)
-async def get_year_performance(
-    year: int = Query(..., description="Year to analyze"),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Get yearly performance analysis with total sums per plan category."""
-    repo = PlanRepository(db)
-    return await repo.get_year_performance(year)
 
 @router.get("/year-summary", response_model=schemas.YearSummary)
 async def get_year_summary(
@@ -153,24 +144,4 @@ async def get_year_summary(
     - % of the amount of payments for the month from the amount of payments for the year
     """
     repo = PlanRepository(db)
-    return await repo.get_year_summary(year)
-
-@router.get("/users-with-open-loans", response_model=List[schemas.UserWithOpenLoans])
-async def get_users_with_open_loans(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Get all users who have open loans.
-    
-    Returns a list of users with their open loan information including:
-    - User ID, login, and registration date
-    - List of open loans for each user with loan details
-    """
-    repo = PlanRepository(db)
-    users = await repo.get_users_with_open_loans()
-    
-    if not users:
-        raise HTTPException(status_code=404, detail="No users with open loans found")
-    
-    return users 
+    return await repo.get_year_summary(year) 
