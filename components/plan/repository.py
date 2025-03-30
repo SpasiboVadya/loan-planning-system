@@ -1,8 +1,7 @@
 """Repository for plan operations."""
 
-from datetime import date, datetime, timedelta
-from typing import List, Dict, Optional, Any, Tuple, BinaryIO
-import io
+from datetime import date, datetime
+from typing import List, Dict, Tuple, BinaryIO
 import pandas as pd
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +12,6 @@ from components.credit.models import Credit
 from components.payment.models import Payment
 from components.dictionary.models import Dictionary
 from components.plan import schemas
-from components.user.models import User
 
 
 class PlanRepository:
@@ -162,14 +160,12 @@ class PlanRepository:
         categories = {category.id: category.name for category in result.scalars().all()}
         
         # Find category IDs for issue and collection
-        # Assuming тіло (body) is for credit issue, відсотки (interest) is for collection
-        issue_category_id = next((k for k, v in categories.items() if v == "тіло"), None)
-        collection_category_id = next((k for k, v in categories.items() if v == "відсотки"), None)
+        # Using the actual names from the output: "видача" (issue) and "збір" (collection)
+        issue_category_id = next((k for k, v in categories.items() if v == "видача"), None)
+        collection_category_id = next((k for k, v in categories.items() if v == "збір"), None)
         
+
         performance_data = []
-        
-        # Next month for date comparison
-        next_month = date(plan_month.year, plan_month.month + 1, 1) if plan_month.month < 12 else date(plan_month.year + 1, 1, 1)
         
         for plan in plans:
             category_id = plan.category_id
@@ -178,89 +174,81 @@ class PlanRepository:
             # Calculate actual amounts depending on category
             if category_id == issue_category_id:
                 # For "Issue" category - sum of credit.body for credits issued in this period
-                result = await self.session.execute(
-                    select(func.sum(Credit.body))
-                    .where(
-                        Credit.issuance_date >= plan_month,
-                        Credit.issuance_date <= as_of_date
-                    )
+                query = select(func.sum(Credit.body)).where(
+                    Credit.issuance_date >= plan_month,
+                    Credit.issuance_date <= as_of_date
                 )
+                result = await self.session.execute(query)
                 actual_amount = result.scalar() or 0
             elif category_id == collection_category_id:
                 # For "Collection" category - sum of payments in this period
-                result = await self.session.execute(
-                    select(func.sum(Payment.sum))
-                    .join(Credit, Payment.credit_id == Credit.id)
-                    .where(
-                        Payment.payment_date >= plan_month,
-                        Payment.payment_date <= as_of_date,
-                        Payment.type_id == category_id
-                    )
+                query = select(func.sum(Payment.sum)).join(Credit, Payment.credit_id == Credit.id).where(
+                    Payment.payment_date >= plan_month,
+                    Payment.payment_date <= as_of_date,
+                    Payment.type_id == category_id
                 )
+                result = await self.session.execute(query)
                 actual_amount = result.scalar() or 0
             else:
                 # For other categories - sum of payments of that type
-                result = await self.session.execute(
-                    select(func.sum(Payment.sum))
-                    .join(Credit, Payment.credit_id == Credit.id)
-                    .where(
-                        Payment.payment_date >= plan_month,
-                        Payment.payment_date <= as_of_date,
-                        Payment.type_id == category_id
-                    )
+                query = select(func.sum(Payment.sum)).join(Credit, Payment.credit_id == Credit.id).where(
+                    Payment.payment_date >= plan_month,
+                    Payment.payment_date <= as_of_date,
+                    Payment.type_id == category_id
                 )
+                result = await self.session.execute(query)
                 actual_amount = result.scalar() or 0
-            
+
             # Calculate fulfillment percentage
             plan_amount = float(plan.sum)
             actual_amount = float(actual_amount)
             fulfillment_percentage = (actual_amount / plan_amount * 100) if plan_amount > 0 else 0
             
+
             # Add to result
             performance_data.append(schemas.CategoryPerformance(
+                plan_month=plan_month,
                 category=category_name,
-                planned=plan_amount,
-                actual=actual_amount,
-                difference=actual_amount - plan_amount,
-                performance_percentage=fulfillment_percentage,
-                plan_month=plan_month
+                amount_from_the_plan=plan_amount,
+                issued_credits_or_payments=actual_amount,
+                performance_percentage=fulfillment_percentage
             ))
         
         return performance_data
 
-    async def get_year_summary(self, year: int) -> schemas.YearSummary:
+    async def get_year_performance(self, year: int) -> schemas.YearSummary:
         """
         Get summarized information for a given year, grouped by month.
         
         Returns monthly summaries with:
         - Month and year
-        - Number of issues (credits) for the month
-        - Amount from the plan for the month
-        - Total amount of payments for the month
-        - % fulfillment of the plan for payments
-        - Number of payments per month
-        - Amount from the collection plan for the month
-        - Amount of payments for the month
-        - % fulfillment of the collection plan
-        - % of the amount of issues for the month from the amount of issues for the year
-        - % of the amount of payments for the month from the amount of payments for the year
+        - Number of credits issued for the month (num_credits_issued)
+        - Amount from the issue plan for the month (issue_plan_amount)
+        - Amount of issued credits for the month (issued_credits_amount)
+        - % fulfillment of the issue plan (issue_plan_fulfillment_percentage)
+        - Number of payments per month (num_payments)
+        - Amount from the collection plan for the month (collection_plan_amount)
+        - Amount of collected payments for the month (collected_payments_amount)
+        - % fulfillment of the collection plan (collection_plan_fulfillment_percentage)
+        - % of the amount of issues for the month from the amount of issues for the year (issues_percentage_of_year)
+        - % of the amount of payments for the month from the amount of payments for the year (payments_percentage_of_year)
         """
         # Initialize the yearly totals
-        total_issues = 0
-        total_payments = 0
-        total_payment_amount = 0
-        total_plan_amount = 0
+        total_credits_issued = 0
+        total_num_payments = 0
+        total_issued_credits_amount = 0
+        total_issued_credits_plan_amount = 0
         total_collection_plan_amount = 0
-        total_collection_payments = 0
+        total_collected_payments_amount = 0
         
         # Get dictionary categories to identify payment types
         result = await self.session.execute(select(Dictionary))
         categories = {category.id: category.name for category in result.scalars().all()}
         
-        # Find category IDs for body and interest payments
-        # Assuming тіло (body) is for credit issue, відсотки (interest) is for collection
-        body_category_id = next((k for k, v in categories.items() if v == "тіло"), None)
-        interest_category_id = next((k for k, v in categories.items() if v == "відсотки"), None)
+        # Find category IDs for issue and collection
+        # Using the actual names from the output: "видача" (issue) and "збір" (collection)
+        issue_category_id = next((k for k, v in categories.items() if v == "видача"), None)
+        collection_category_id = next((k for k, v in categories.items() if v == "збір"), None)
         
         # Get yearly data for credits issued
         result = await self.session.execute(
@@ -271,8 +259,9 @@ class PlanRepository:
             )
         )
         yearly_credits = list(result.scalars().all())
-        total_issues = len(yearly_credits)
+        total_credits_issued = len(yearly_credits)
         yearly_credit_amount = sum(float(credit.body) for credit in yearly_credits)
+        total_issued_credits_amount = yearly_credit_amount
         
         # Get yearly data for payments
         result = await self.session.execute(
@@ -284,8 +273,12 @@ class PlanRepository:
             )
         )
         yearly_payments = list(result.scalars().all())
-        total_payments = len(yearly_payments)
+        total_num_payments = len(yearly_payments)
         yearly_payment_amount = sum(float(payment.sum) for payment in yearly_payments)
+        
+        # Split payments by category
+        collection_payments = [p for p in yearly_payments if p.type_id == collection_category_id]
+        total_collected_payments_amount = sum(float(payment.sum) for payment in collection_payments)
         
         # Get yearly plan amounts
         result = await self.session.execute(
@@ -299,17 +292,18 @@ class PlanRepository:
         
         # Get plan amounts by category
         for plan in yearly_plans:
-            if plan.category_id == body_category_id:
-                total_plan_amount += float(plan.sum)
-            elif plan.category_id == interest_category_id:
+            if plan.category_id == issue_category_id:
+                total_issued_credits_plan_amount += float(plan.sum)
+            elif plan.category_id == collection_category_id:
                 total_collection_plan_amount += float(plan.sum)
         
         # Calculate overall percentages
-        overall_plan_fulfillment = (
-            (total_payment_amount / total_plan_amount * 100) if total_plan_amount > 0 else 0
+        overall_issue_plan_fulfillment_percentage = (
+            (total_issued_credits_amount / total_issued_credits_plan_amount * 100) 
+            if total_issued_credits_plan_amount > 0 else 0
         )
-        overall_collection_plan_fulfillment = (
-            (total_collection_payments / total_collection_plan_amount * 100) 
+        overall_collection_plan_fulfillment_percentage = (
+            (total_collected_payments_amount / total_collection_plan_amount * 100) 
             if total_collection_plan_amount > 0 else 0
         )
         
@@ -330,8 +324,8 @@ class PlanRepository:
                 )
             )
             month_credits = list(result.scalars().all())
-            month_num_issues = len(month_credits)
-            month_issues_amount = sum(float(credit.body) for credit in month_credits)
+            month_num_credits_issued = len(month_credits)
+            month_issued_credits_amount = sum(float(credit.body) for credit in month_credits)
             
             # Get payments made in this month
             result = await self.session.execute(
@@ -346,17 +340,9 @@ class PlanRepository:
             month_num_payments = len(month_payments)
             month_payment_amount = sum(float(payment.sum) for payment in month_payments)
             
-            # Split payments by type
-            month_body_payments = sum(
-                float(payment.sum) 
-                for payment in month_payments 
-                if payment.type_id == body_category_id
-            )
-            month_interest_payments = sum(
-                float(payment.sum) 
-                for payment in month_payments 
-                if payment.type_id == interest_category_id
-            )
+            # Split payments by category
+            month_collected_payments = [p for p in month_payments if p.type_id == collection_category_id]
+            month_collected_payments_amount = sum(float(payment.sum) for payment in month_collected_payments)
             
             # Get plan amounts for this month
             result = await self.session.execute(
@@ -368,31 +354,31 @@ class PlanRepository:
             month_plans = list(result.scalars().all())
             
             # Get plan amounts by category for this month
-            month_plan_amount = sum(
+            month_issue_plan_amount = sum(
                 float(plan.sum) 
                 for plan in month_plans 
-                if plan.category_id == body_category_id
+                if plan.category_id == issue_category_id
             )
             month_collection_plan_amount = sum(
                 float(plan.sum) 
                 for plan in month_plans 
-                if plan.category_id == interest_category_id
+                if plan.category_id == collection_category_id
             )
             
             # Calculate percentages
-            month_plan_fulfillment = (
-                (month_body_payments / month_plan_amount * 100) 
-                if month_plan_amount > 0 else 0
+            month_issue_plan_fulfillment_percentage = (
+                (month_issued_credits_amount / month_issue_plan_amount * 100) 
+                if month_issue_plan_amount > 0 else 0
             )
-            month_collection_plan_fulfillment = (
-                (month_interest_payments / month_collection_plan_amount * 100) 
+            month_collection_plan_fulfillment_percentage = (
+                (month_collected_payments_amount / month_collection_plan_amount * 100) 
                 if month_collection_plan_amount > 0 else 0
             )
-            month_issues_percentage = (
-                (month_issues_amount / yearly_credit_amount * 100) 
+            month_issues_percentage_of_year = (
+                (month_issued_credits_amount / yearly_credit_amount * 100) 
                 if yearly_credit_amount > 0 else 0
             )
-            month_payments_percentage = (
+            month_payments_percentage_of_year = (
                 (month_payment_amount / yearly_payment_amount * 100) 
                 if yearly_payment_amount > 0 else 0
             )
@@ -401,33 +387,29 @@ class PlanRepository:
             monthly_summaries.append(schemas.MonthSummary(
                 month=month,
                 year=year,
-                num_issues=month_num_issues,
-                plan_amount=month_plan_amount,
-                total_payments=month_body_payments,
-                plan_fulfillment_percentage=month_plan_fulfillment,
+                num_credits_issued=month_num_credits_issued,
+                issue_plan_amount=month_issue_plan_amount,
+                issued_credits_amount=month_issued_credits_amount,
+                issue_plan_fulfillment_percentage=month_issue_plan_fulfillment_percentage,
                 num_payments=month_num_payments,
                 collection_plan_amount=month_collection_plan_amount,
-                collection_payments=month_interest_payments,
-                collection_plan_fulfillment_percentage=month_collection_plan_fulfillment,
-                issues_percentage_of_year=month_issues_percentage,
-                payments_percentage_of_year=month_payments_percentage
+                collected_payments_amount=month_collected_payments_amount,
+                collection_plan_fulfillment_percentage=month_collection_plan_fulfillment_percentage,
+                issues_percentage_of_year=month_issues_percentage_of_year,
+                payments_percentage_of_year=month_payments_percentage_of_year
             ))
-            
-            # Update yearly totals
-            total_payment_amount += month_body_payments
-            total_collection_payments += month_interest_payments
         
         # Create and return the year summary
         return schemas.YearSummary(
             year=year,
-            total_issues=total_issues,
-            total_plan_amount=total_plan_amount,
-            total_payments=total_payment_amount,
-            overall_plan_fulfillment_percentage=overall_plan_fulfillment,
-            total_num_payments=total_payments,
+            total_credits_issued=total_credits_issued,
+            total_issue_plan_amount=total_issued_credits_plan_amount,
+            total_issued_credits_amount=total_issued_credits_amount,
+            overall_issue_plan_fulfillment_percentage=overall_issue_plan_fulfillment_percentage,
+            total_num_payments=total_num_payments,
             total_collection_plan_amount=total_collection_plan_amount,
-            total_collection_payments=total_collection_payments,
-            overall_collection_plan_fulfillment_percentage=overall_collection_plan_fulfillment,
+            total_collected_payments_amount=total_collected_payments_amount,
+            overall_collection_plan_fulfillment_percentage=overall_collection_plan_fulfillment_percentage,
             monthly_summaries=monthly_summaries
         )
 
