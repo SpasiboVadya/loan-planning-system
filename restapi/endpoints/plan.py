@@ -1,7 +1,7 @@
 """Plan endpoints for the API."""
 
 from datetime import date
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 import io
@@ -99,27 +99,38 @@ async def upload_plans(
         message=message
     )
 
-@router.get("/performance", response_model=List[schemas.CategoryPerformance])
-async def get_plans_performance(
-    as_of_date: date = Query(..., description="Date as of which to check plan execution"),
+@router.get("/performance")
+async def get_performance(
+    as_of_date: Optional[date] = Query(None, description="Date for which to get performance (defaults to today)"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
-):
+) -> List[schemas.CategoryPerformance]:
     """
-    Get performance of plans as of a specific date.
+    Get performance report for plans.
     
-    Returns:
+    Returns a list of category performances with:
     - Month of the plan
     - Plan category
     - Amount from the plan
-    - Amount of credits issued (for plans with the "Issue" category) or payments collected (for "Collect" category)
-    - % of plan fulfillment
+    - Amount of issued credits or payments
+    - Performance percentage
     
-    All calculations are based on data from the beginning of the plan month to the specified date (inclusive).
+    If as_of_date is not provided, defaults to current date.
     """
-    repo = PlanRepository(db)
-    return await repo.get_plans_performance(as_of_date)
-
+    # Default to current date if not provided
+    check_date = as_of_date or date.today()
+    
+    # Create repository and get data
+    plan_repo = PlanRepository(db)
+    performances = await plan_repo.get_plans_performance(check_date)
+    
+    if not performances:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No plans found for the period including {check_date}"
+        )
+    
+    return performances
 
 @router.get("/year-summary", response_model=schemas.YearSummary)
 async def get_year_summary(

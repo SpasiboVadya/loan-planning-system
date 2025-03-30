@@ -1,8 +1,7 @@
 """Repository for plan operations."""
 
-from datetime import date, datetime, timedelta
-from typing import List, Dict, Optional, Any, Tuple, BinaryIO
-import io
+from datetime import date, datetime
+from typing import List, Dict, Tuple, BinaryIO
 import pandas as pd
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +12,6 @@ from components.credit.models import Credit
 from components.payment.models import Payment
 from components.dictionary.models import Dictionary
 from components.plan import schemas
-from components.user.models import User
 
 
 class PlanRepository:
@@ -162,14 +160,12 @@ class PlanRepository:
         categories = {category.id: category.name for category in result.scalars().all()}
         
         # Find category IDs for issue and collection
-        # Assuming тіло (body) is for credit issue, відсотки (interest) is for collection
-        issue_category_id = next((k for k, v in categories.items() if v == "тіло"), None)
-        collection_category_id = next((k for k, v in categories.items() if v == "відсотки"), None)
+        # Using the actual names from the output: "видача" (issue) and "збір" (collection)
+        issue_category_id = next((k for k, v in categories.items() if v == "видача"), None)
+        collection_category_id = next((k for k, v in categories.items() if v == "збір"), None)
         
+
         performance_data = []
-        
-        # Next month for date comparison
-        next_month = date(plan_month.year, plan_month.month + 1, 1) if plan_month.month < 12 else date(plan_month.year + 1, 1, 1)
         
         for plan in plans:
             category_id = plan.category_id
@@ -178,52 +174,44 @@ class PlanRepository:
             # Calculate actual amounts depending on category
             if category_id == issue_category_id:
                 # For "Issue" category - sum of credit.body for credits issued in this period
-                result = await self.session.execute(
-                    select(func.sum(Credit.body))
-                    .where(
-                        Credit.issuance_date >= plan_month,
-                        Credit.issuance_date <= as_of_date
-                    )
+                query = select(func.sum(Credit.body)).where(
+                    Credit.issuance_date >= plan_month,
+                    Credit.issuance_date <= as_of_date
                 )
+                result = await self.session.execute(query)
                 actual_amount = result.scalar() or 0
             elif category_id == collection_category_id:
                 # For "Collection" category - sum of payments in this period
-                result = await self.session.execute(
-                    select(func.sum(Payment.sum))
-                    .join(Credit, Payment.credit_id == Credit.id)
-                    .where(
-                        Payment.payment_date >= plan_month,
-                        Payment.payment_date <= as_of_date,
-                        Payment.type_id == category_id
-                    )
+                query = select(func.sum(Payment.sum)).join(Credit, Payment.credit_id == Credit.id).where(
+                    Payment.payment_date >= plan_month,
+                    Payment.payment_date <= as_of_date,
+                    Payment.type_id == category_id
                 )
+                result = await self.session.execute(query)
                 actual_amount = result.scalar() or 0
             else:
                 # For other categories - sum of payments of that type
-                result = await self.session.execute(
-                    select(func.sum(Payment.sum))
-                    .join(Credit, Payment.credit_id == Credit.id)
-                    .where(
-                        Payment.payment_date >= plan_month,
-                        Payment.payment_date <= as_of_date,
-                        Payment.type_id == category_id
-                    )
+                query = select(func.sum(Payment.sum)).join(Credit, Payment.credit_id == Credit.id).where(
+                    Payment.payment_date >= plan_month,
+                    Payment.payment_date <= as_of_date,
+                    Payment.type_id == category_id
                 )
+                result = await self.session.execute(query)
                 actual_amount = result.scalar() or 0
-            
+
             # Calculate fulfillment percentage
             plan_amount = float(plan.sum)
             actual_amount = float(actual_amount)
             fulfillment_percentage = (actual_amount / plan_amount * 100) if plan_amount > 0 else 0
             
+
             # Add to result
             performance_data.append(schemas.CategoryPerformance(
+                plan_month=plan_month,
                 category=category_name,
                 amount_from_the_plan=plan_amount,
-                actual=actual_amount,
-                difference=actual_amount - plan_amount,
-                performance_percentage=fulfillment_percentage,
-                plan_month=plan_month
+                issued_credits_or_payments=actual_amount,
+                performance_percentage=fulfillment_percentage
             ))
         
         return performance_data

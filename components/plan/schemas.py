@@ -35,8 +35,7 @@ class CategoryPerformance(BaseModel):
     plan_month: date
     category: str
     amount_from_the_plan: float
-    actual: float
-    difference: float
+    issued_credits_or_payments: float  # Сума виданих кредитів або зібраних платежів
     performance_percentage: float
 
 
