@@ -1,13 +1,15 @@
 """Repository for user operations."""
 
 from datetime import date
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from components.user.models import User
-from components.user.schemas import UserCreate, User as UserSchema
+from components.user.schemas import UserCreate, User as UserSchema, UserUpdate
 from components.core.security import get_password_hash
+from components.credit.models import Credit
+from components.plan import schemas as plan_schemas
 
 
 class UserRepository:
@@ -62,7 +64,7 @@ class UserRepository:
         result = await self.session.execute(query)
         return list(result.scalars().all())
 
-    async def update(self, user_id: int, user: UserCreate) -> Optional[UserSchema]:
+    async def update(self, user_id: int, user: UserUpdate) -> Optional[UserSchema]:
         """Update user by ID."""
         db_user = await self.get_by_id(user_id)
         if not db_user:
@@ -99,3 +101,50 @@ class UserRepository:
             select(User).join(User.credits).distinct()
         )
         return list(result.scalars().all())
+
+    async def get_users_with_open_loans(self) -> List[Dict]:
+        """
+        Get all users who have open loans.
+        
+        Returns a list of users with open loan information.
+        """
+        # Find users with credits where actual_return_date is NULL (open loans)
+        result = await self.session.execute(
+            select(Credit.user_id)
+            .where(Credit.actual_return_date == None)
+            .distinct()
+        )
+        user_ids = [row[0] for row in result.all()]
+        
+        if not user_ids:
+            return []
+        
+        # Get user information for these IDs
+        users_with_loans = []
+        
+        for user_id in user_ids:
+            # Get user info
+            result = await self.session.execute(
+                select(User).where(User.id == user_id)
+            )
+            user = result.scalar_one_or_none()
+            
+            if user:
+                # Get open loans for this user
+                # We need to use the PlanRepository for this
+                from components.plan.repository import PlanRepository
+                plan_repo = PlanRepository(self.session)
+                credits = await plan_repo.get_user_credits(user_id)
+                
+                # Filter only open loans
+                open_loans = [credit for credit in credits if not credit.is_closed]
+                
+                if open_loans:
+                    users_with_loans.append({
+                        "user_id": user.id,
+                        "login": user.login,
+                        "registration_date": user.registration_date,
+                        "open_loans": open_loans
+                    })
+        
+        return users_with_loans

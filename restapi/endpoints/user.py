@@ -86,7 +86,7 @@ async def read_user_by_login(
 @router.put("/{user_id}", response_model=schemas.User)
 async def update_user(
     user_id: int,
-    user: schemas.UserCreate,
+    user: schemas.UserUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -122,13 +122,3 @@ async def delete_user(
     if not await repo.delete(user_id):
         raise HTTPException(status_code=404, detail="User not found")
     return {"message": "User deleted successfully"}
-
-
-@router.get("/with-credits/", response_model=List[schemas.User])
-async def get_users_with_credits(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Get all users who have credits."""
-    repo = UserRepository(db)
-    return await repo.get_users_with_credits()

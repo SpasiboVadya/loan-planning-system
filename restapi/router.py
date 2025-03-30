@@ -5,7 +5,7 @@ from fastapi.middleware import cors
 from fastapi.openapi.utils import get_openapi
 
 from components.core import init_db
-from restapi.endpoints import health_check, user, auth, plan
+from restapi.endpoints import health_check, user, auth, plan, helpers
 
 def create_app() -> fastapi.FastAPI:
     """Create and configure the FastAPI application."""
@@ -32,6 +32,8 @@ def create_app() -> fastapi.FastAPI:
     app.include_router(auth.router)
     app.include_router(user.router)
     app.include_router(plan.router)
+    app.include_router(helpers.router)
+
 
     def custom_openapi():
         if app.openapi_schema:
