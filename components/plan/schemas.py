@@ -32,12 +32,12 @@ class Plan(PlanInDB):
 
 class CategoryPerformance(BaseModel):
     """Schema for category performance."""
+    plan_month: date
     category: str
-    planned: float
+    amount_from_the_plan: float
     actual: float
     difference: float
     performance_percentage: float
-    plan_month: date
 
 
 class MonthlyPerformance(BaseModel):

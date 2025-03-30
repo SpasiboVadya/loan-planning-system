@@ -219,7 +219,7 @@ class PlanRepository:
             # Add to result
             performance_data.append(schemas.CategoryPerformance(
                 category=category_name,
-                planned=plan_amount,
+                amount_from_the_plan=plan_amount,
                 actual=actual_amount,
                 difference=actual_amount - plan_amount,
                 performance_percentage=fulfillment_percentage,
