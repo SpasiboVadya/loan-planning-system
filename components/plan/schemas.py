@@ -35,7 +35,7 @@ class CategoryPerformance(BaseModel):
     plan_month: date
     category: str
     amount_from_the_plan: float
-    issued_credits_or_payments: float  # Сума виданих кредитів або зібраних платежів
+    issued_credits_or_payments: float
     performance_percentage: float
 
 
@@ -64,13 +64,13 @@ class MonthSummary(BaseModel):
     """Schema for monthly summary performance."""
     month: int
     year: int
-    num_issues: int
-    plan_amount: float
-    total_payments: float
-    plan_fulfillment_percentage: float
+    num_credits_issued: int
+    issue_plan_amount: float
+    issued_credits_amount: float
+    issue_plan_fulfillment_percentage: float
     num_payments: int
     collection_plan_amount: float
-    collection_payments: float
+    collected_payments_amount: float
     collection_plan_fulfillment_percentage: float
     issues_percentage_of_year: float
     payments_percentage_of_year: float
@@ -79,13 +79,13 @@ class MonthSummary(BaseModel):
 class YearSummary(BaseModel):
     """Schema for yearly summary performance."""
     year: int
-    total_issues: int
-    total_plan_amount: float
-    total_payments: float
-    overall_plan_fulfillment_percentage: float
+    total_credits_issued: int
+    total_issue_plan_amount: float
+    total_issued_credits_amount: float
+    overall_issue_plan_fulfillment_percentage: float
     total_num_payments: int
     total_collection_plan_amount: float
-    total_collection_payments: float
+    total_collected_payments_amount: float
     overall_collection_plan_fulfillment_percentage: float
     monthly_summaries: List[MonthSummary]
 

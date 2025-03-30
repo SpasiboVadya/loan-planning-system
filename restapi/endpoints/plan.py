@@ -132,8 +132,8 @@ async def get_performance(
     
     return performances
 
-@router.get("/year-summary", response_model=schemas.YearSummary)
-async def get_year_summary(
+@router.get("/year_performance", response_model=schemas.YearSummary)
+async def get_year_performance(
     year: int = Query(..., description="Year to analyze"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -155,4 +155,4 @@ async def get_year_summary(
     - % of the amount of payments for the month from the amount of payments for the year
     """
     repo = PlanRepository(db)
-    return await repo.get_year_summary(year) 
+    return await repo.get_year_performance(year) 
